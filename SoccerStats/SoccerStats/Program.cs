@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.IO;
 using Newtonsoft.Json;
+using System.Net;
 
 namespace SoccerStats
 {
@@ -21,11 +22,35 @@ namespace SoccerStats
             var topTenPlayers = GetTopTenPlayers(players);
             foreach (var player in topTenPlayers)
             {
-                Console.WriteLine( "Name: " + player.SecondName + " PPG: " + player.PointsPerGame);
+                List<NewsResult> newsResults = GetNewsForPlayer(string.Format("{0} {1}", player.FirstName, player.SecondName));
+                SentimentResponse sentimentResponse = GetSentimentResponse(newsResults);
+                foreach (var sentiment in sentimentResponse.Sentiments)
+                {
+                    foreach (var newsResult in newsResults)
+                    {
+                        if (sentiment.Id == newsResult.Headline)
+                        {
+                            double score;
+                            if (double.TryParse(sentiment.Score, out score))
+                            {
+                                newsResult.SentimentScore = score;
+                            }
+                            break;
+                        }
+                    }
+                }
+                foreach (var result in newsResults)
+                {
+                    Console.WriteLine(string.Format("Sentiment Score: {0:p},  Date: {1:f}, Headline: {2}, Summary: {3} \r\n",result.SentimentScore, result.DatePublished, result.Headline, result.Summary));
+                   
+                }
+                Console.ReadKey();
             }
             fileName = Path.Combine(directory.FullName, "topten.json");
             SerializePlayersToFile(topTenPlayers, fileName);
-        }
+
+            
+           }
 
         public static string ReadFile(string fileName)
         {
@@ -104,6 +129,7 @@ namespace SoccerStats
 
             return players;
         }
+
         public static List<Player> GetTopTenPlayers(List<Player> players)
         {
             var topTenPlayers = new List<Player>();
@@ -138,6 +164,44 @@ namespace SoccerStats
 
 
            
+        }
+
+        public static List<NewsResult> GetNewsForPlayer(string playerName)
+        {
+            var results = new List<NewsResult>();
+            var webClient = new WebClient();
+            webClient.Headers.Add("Ocp-Apim-Subscription-Key", "1f8242c622074f38b122018805ae350d");
+            byte[] searchResults = webClient.DownloadData(string.Format("https://api.cognitive.microsoft.com/bing/v5.0/news/search?q={0}&mkt=en-us", playerName));
+            var serializer = new JsonSerializer();
+
+            using (var stream = new MemoryStream(searchResults))
+            using (var reader = new StreamReader(stream))
+            using (var jsonReader = new JsonTextReader(reader))
+            {
+                results = serializer.Deserialize<NewsSearch>(jsonReader).NewsResults;
+            }
+            return results;
+        }
+        public static SentimentResponse GetSentimentResponse(List<NewsResult> newsResults)
+        {
+            var sentimentResponse = new SentimentResponse();
+            var sentimentRequest = new SentimentRequest();
+            sentimentRequest.Documents = new List<Document>();
+            foreach (var result in newsResults)
+            {
+                sentimentRequest.Documents.Add(new Document { Id = result.Headline, Text = result.Summary });
+            }
+
+            var webClient = new WebClient();
+            webClient.Headers.Add("Ocp-Apim-Subscription-Key", "c52db8bb4c2748f49f46d530f92a35ba");
+            webClient.Headers.Add("Content-Type", "application/json");
+            webClient.Headers.Add(HttpRequestHeader.Accept, "application/json");
+            string requestJson = JsonConvert.SerializeObject(sentimentRequest);
+            byte[] requestBytes = Encoding.UTF8.GetBytes(requestJson);
+            byte[] response = webClient.UploadData("https://westus.api.cognitive.microsoft.com/text/analytics/v2.0/sentiment", requestBytes);
+            string sentiments = Encoding.UTF8.GetString(response);
+            sentimentResponse = JsonConvert.DeserializeObject<SentimentResponse>(sentiments);
+            return sentimentResponse;
         }
     }
 }
